@@ -1,0 +1,11 @@
+[package]
+name = "lattice-core"
+version = "0.1.0"
+edition = "2021"
+authors = ["Antigravity Core Team"]
+description = "High-performance reaction-diffusion and cellular automata engine with SIMD and Bounds Check Elimination"
+
+[dependencies]
+# Zero external runtime dependencies - pure idiomatic Rust and standard library
+
+[dev-dependencies]

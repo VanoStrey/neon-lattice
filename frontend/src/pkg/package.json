@@ -1,0 +1,19 @@
+{
+  "name": "lattice-wasm",
+  "type": "module",
+  "collaborators": [
+    "Antigravity Core Team"
+  ],
+  "description": "Zero-copy WebAssembly bridge for neon-lattice simulation engine",
+  "version": "0.1.0",
+  "files": [
+    "lattice_wasm_bg.wasm",
+    "lattice_wasm.js",
+    "lattice_wasm.d.ts"
+  ],
+  "main": "lattice_wasm.js",
+  "types": "lattice_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

@@ -1,5 +1,33 @@
+# macOS
 .DS_Store
+.AppleDouble
+.LSOverride
+
+# Rust / Cargo
+target/
+**/*.rs.bk
+
+# Node / Frontend
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+dist-ssr/
+*.local
+.vite/
+frontend/.vite/
+*.tsbuildinfo
+
+# Recordings & Media
+*.mp4
+*.mov
+
+# Temp & Logs
 *.swp
 *~
 *.log
 /tmp/
+.idea/
+.vscode/
+.gemini/
+
