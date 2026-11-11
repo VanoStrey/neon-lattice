@@ -1,0 +1,32 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    name: Build & Publish macOS DMG
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build DMG Installer
+        run: |
+          chmod +x scripts/create_dmg.sh
+          ./scripts/create_dmg.sh
+
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Neon Wallpaper ${{ github.ref_name }}
+          files: |
+            dist/NeonWallpaper-Installer.dmg
+            dist/NeonWallpaper.dmg
+          draft: false
+          prerelease: false
+          generate_release_notes: true
