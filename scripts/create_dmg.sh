@@ -22,10 +22,13 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo "🧬 NEON-LATTICE // Building Native macOS DMG Installer"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# 1. Compile native binary if needed
-echo "• [1/6] Compiling Apple Silicon native wallpaper engine..."
+# 1. Compile Universal 2 binary (Apple Silicon arm64 + Intel x86_64)
+echo "• [1/6] Compiling Universal 2 (Apple Silicon arm64 + Intel x86_64) native engine..."
 mkdir -p "${PROJECT_ROOT}/bin"
-swiftc -O -whole-module-optimization "${PROJECT_ROOT}/tools/neon-wallpaper/main.swift" -o "${PROJECT_ROOT}/bin/neon-wallpaper"
+swiftc -target arm64-apple-macos13.0 -O -whole-module-optimization "${PROJECT_ROOT}/tools/neon-wallpaper/main.swift" -o "${PROJECT_ROOT}/bin/neon-wallpaper-arm64"
+swiftc -target x86_64-apple-macos13.0 -O -whole-module-optimization "${PROJECT_ROOT}/tools/neon-wallpaper/main.swift" -o "${PROJECT_ROOT}/bin/neon-wallpaper-x86_64"
+lipo -create "${PROJECT_ROOT}/bin/neon-wallpaper-arm64" "${PROJECT_ROOT}/bin/neon-wallpaper-x86_64" -output "${PROJECT_ROOT}/bin/neon-wallpaper"
+rm -f "${PROJECT_ROOT}/bin/neon-wallpaper-arm64" "${PROJECT_ROOT}/bin/neon-wallpaper-x86_64"
 strip "${PROJECT_ROOT}/bin/neon-wallpaper"
 codesign -s - -f "${PROJECT_ROOT}/bin/neon-wallpaper"
 
