@@ -24,9 +24,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: Neon Wallpaper ${{ github.ref_name }}
-          files: |
-            dist/NeonWallpaper-Installer.dmg
-            dist/NeonWallpaper.dmg
+          files: dist/NeonWallpaper.dmg
           draft: false
           prerelease: false
           generate_release_notes: true

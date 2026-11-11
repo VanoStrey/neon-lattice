@@ -13,7 +13,7 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 VOL_NAME="Neon Wallpaper"
 APP_NAME="Neon Wallpaper.app"
-DMG_FINAL_NAME="NeonWallpaper-Installer.dmg"
+DMG_FINAL_NAME="NeonWallpaper.dmg"
 DIST_DIR="${PROJECT_ROOT}/dist"
 TMP_DIR="/tmp/neon-dmg-build-$$"
 RW_DMG="/tmp/neon-rw-$$.dmg"
@@ -169,9 +169,6 @@ if [ -f "${PROJECT_ROOT}/tools/neon-wallpaper/AppIcon.icns" ]; then
     ' >/dev/null 2>&1 || true
     echo "  ✔ Applied custom Finder icon to ${DMG_FINAL_NAME}"
 fi
-
-# Convenient alias
-ln -sf "${DMG_FINAL_NAME}" "${DIST_DIR}/NeonWallpaper.dmg"
 
 # Cleanup
 rm -rf "${TMP_DIR}" "${RW_DMG}"
