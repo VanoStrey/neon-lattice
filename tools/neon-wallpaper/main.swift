@@ -36,49 +36,73 @@ struct Agent {
     float amountU;
 };
 
-// 1. Ultra-optimized Gray-Scott 9-point Laplacian Compute Kernel
+// 1. Ultra-optimized Gray-Scott 9-point Laplacian Compute Kernel with FP16 (half2) and Threadgroup SRAM Tile Caching
 kernel void simulate_gray_scott(
-    device const float2* currentField [[buffer(0)]],
-    device float2* nextField [[buffer(1)]],
+    device const half2* currentField [[buffer(0)]],
+    device half2* nextField [[buffer(1)]],
     constant SimParams& params [[buffer(2)]],
     device const Agent* agents [[buffer(3)]],
-    uint2 gid [[thread_position_in_grid]]
+    uint2 gid [[thread_position_in_grid]],
+    uint2 tid [[thread_position_in_threadgroup]],
+    uint2 tgid [[threadgroup_position_in_grid]]
 ) {
-    if (gid.x >= params.width || gid.y >= params.height) return;
-
     uint w = params.width;
     uint h = params.height;
 
-    // Branchless Toroidal Coordinate Wrapping
-    uint left   = (gid.x == 0) ? w - 1 : gid.x - 1;
-    uint right  = (gid.x == w - 1) ? 0 : gid.x + 1;
-    uint top    = (gid.y == 0) ? h - 1 : gid.y - 1;
-    uint bottom = (gid.y == h - 1) ? 0 : gid.y + 1;
+    // Fast on-chip SRAM threadgroup cache: 18x18 tile covers 16x16 block + 1-cell halo border
+    threadgroup half2 tile[18][18];
 
-    // Coalesced 64-bit vector loads: packed float2 (U, V)
-    float2 c  = currentField[gid.y * w + gid.x];
-    float2 l  = currentField[gid.y * w + left];
-    float2 r  = currentField[gid.y * w + right];
-    float2 t  = currentField[top * w + gid.x];
-    float2 b  = currentField[bottom * w + gid.x];
-    float2 tl = currentField[top * w + left];
-    float2 tr = currentField[top * w + right];
-    float2 bl = currentField[bottom * w + left];
-    float2 br = currentField[bottom * w + right];
+    int base_x = int(tgid.x * 16);
+    int base_y = int(tgid.y * 16);
+    uint linear_tid = tid.y * 16 + tid.x;
 
-    // 9-point discrete Laplacian (cardinal: 0.20, diagonal: 0.05, center: -1.0)
-    float2 laplacian = (l + r + t + b) * 0.20f + (tl + tr + bl + br) * 0.05f - c;
+    // Cooperative coalesced loading into on-chip SRAM (324 elements loaded by 256 threads)
+    // Pass 1: elements 0..255
+    {
+        int r = int(linear_tid / 18);
+        int c = int(linear_tid % 18);
+        int gx = (base_x + c - 1 + int(w)) % int(w);
+        int gy = (base_y + r - 1 + int(h)) % int(h);
+        tile[r][c] = currentField[gy * int(w) + gx];
+    }
+    // Pass 2: elements 256..323 (68 elements)
+    if (linear_tid < 68) {
+        int idx = 256 + int(linear_tid);
+        int r = idx / 18;
+        int c = idx % 18;
+        int gx = (base_x + c - 1 + int(w)) % int(w);
+        int gy = (base_y + r - 1 + int(h)) % int(h);
+        tile[r][c] = currentField[gy * int(w) + gx];
+    }
 
-    float u = c.x;
-    float v = c.y;
-    float uvv = u * v * v;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Gray-Scott Reaction-Diffusion Euler Integration
-    float du = params.diffU * laplacian.x - uvv + params.feed * (1.0f - u);
-    float dv = params.diffV * laplacian.y + uvv - (params.feed + params.kill) * v;
+    if (gid.x >= w || gid.y >= h) return;
 
-    float nextU = clamp(u + du * params.dt, 0.0f, 1.0f);
-    float nextV = clamp(v + dv * params.dt, 0.0f, 1.0f);
+    // Sub-nanosecond on-chip SRAM stencil lookups (eliminates 86% of global DRAM memory reads)
+    half2 c  = tile[tid.y + 1][tid.x + 1];
+    half2 l  = tile[tid.y + 1][tid.x];
+    half2 r  = tile[tid.y + 1][tid.x + 2];
+    half2 t  = tile[tid.y][tid.x + 1];
+    half2 b  = tile[tid.y + 2][tid.x + 1];
+    half2 tl = tile[tid.y][tid.x];
+    half2 tr = tile[tid.y][tid.x + 2];
+    half2 bl = tile[tid.y + 2][tid.x];
+    half2 br = tile[tid.y + 2][tid.x + 2];
+
+    // 9-point discrete Laplacian in double-rate FP16 SIMD
+    half2 laplacian = (l + r + t + b) * half(0.20) + (tl + tr + bl + br) * half(0.05) - c;
+
+    half u = c.x;
+    half v = c.y;
+    half uvv = u * v * v;
+
+    // Gray-Scott Reaction-Diffusion Euler Integration (FP16)
+    half du = half(params.diffU) * laplacian.x - uvv + half(params.feed) * (half(1.0) - u);
+    half dv = half(params.diffV) * laplacian.y + uvv - half(params.feed + params.kill) * v;
+
+    half nextU = clamp(u + du * half(params.dt), half(0.0), half(1.0));
+    half nextV = clamp(v + dv * half(params.dt), half(0.0), half(1.0));
 
     // Parallel Gaussian agent injection with smooth quadratic falloff
     float2 pos_f = float2(gid);
@@ -92,17 +116,17 @@ kernel void simulate_gray_scott(
         if (distSq < radSq) {
             float weight = (1.0f - distSq / radSq);
             weight = weight * weight;
-            nextV = clamp(nextV + ag.amountV * weight, 0.0f, 1.0f);
-            nextU = clamp(nextU + ag.amountU * weight, 0.0f, 1.0f);
+            nextV = clamp(nextV + half(ag.amountV * weight), half(0.0), half(1.0));
+            nextU = clamp(nextU + half(ag.amountU * weight), half(0.0), half(1.0));
         }
     }
 
-    nextField[gid.y * w + gid.x] = float2(nextU, nextV);
+    nextField[gid.y * w + gid.x] = half2(nextU, nextV);
 }
 
-// 2. Direct-to-Display Bilinear Interpolation & Neon Cyberpunk Tone-Mapper
+// 2. Direct-to-Display Bilinear Interpolation & Neon Cyberpunk Tone-Mapper (FP16 Input)
 kernel void render_to_screen(
-    device const float2* field [[buffer(0)]],
+    device const half2* field [[buffer(0)]],
     constant SimParams& params [[buffer(1)]],
     device const uchar4* paletteLUT [[buffer(2)]],
     texture2d<float, access::write> outTexture [[texture(0)]],
@@ -126,10 +150,10 @@ kernel void render_to_screen(
     float fx = gx - float(x0);
     float fy = gy - float(y0);
 
-    float v00 = field[y0 * params.width + x0].y;
-    float v10 = field[y0 * params.width + x1].y;
-    float v01 = field[y1 * params.width + x0].y;
-    float v11 = field[y1 * params.width + x1].y;
+    float v00 = float(field[y0 * params.width + x0].y);
+    float v10 = float(field[y0 * params.width + x1].y);
+    float v01 = float(field[y1 * params.width + x0].y);
+    float v11 = float(field[y1 * params.width + x1].y);
 
     // Bilinear morphogen concentration reconstruction
     float morphogenV = mix(mix(v00, v10, fx), mix(v01, v11, fx), fy);
@@ -161,6 +185,32 @@ struct Agent {
     var radius: Float
     var amountV: Float
     var amountU: Float
+}
+
+struct Half2 {
+    var u: UInt16
+    var v: UInt16
+
+    static func floatToHalf(_ f: Float) -> UInt16 {
+        let b = f.bitPattern
+        let sign = UInt16((b >> 31) & 0x1)
+        let exp = Int((b >> 23) & 0xFF) - 127
+        let frac = UInt16((b & 0x7FFFFF) >> 13)
+
+        if exp < -14 {
+            return sign << 15
+        } else if exp > 15 {
+            return (sign << 15) | (0x1F << 10)
+        } else {
+            let newExp = UInt16(exp + 15)
+            return (sign << 15) | (newExp << 10) | frac
+        }
+    }
+
+    init(_ uVal: Float, _ vVal: Float) {
+        self.u = Half2.floatToHalf(uVal)
+        self.v = Half2.floatToHalf(vVal)
+    }
 }
 
 // MARK: - Layered Gravitational Drift Agent (Base Random Long Arcs + Dynamic Coverage Breathing + Layered Gravity)
@@ -675,10 +725,10 @@ final class WallpaperRenderer: NSObject, MTKViewDelegate {
             return nil
         }
 
-        let bufferBytes = TOTAL_CELLS * MemoryLayout<SIMD2<Float>>.stride
+        let bufferBytes = TOTAL_CELLS * MemoryLayout<Half2>.stride
 
-        // Seed initial morphogenetic disturbances across 640x400 grid
-        var initialField = [SIMD2<Float>](repeating: SIMD2<Float>(1.0, 0.0), count: TOTAL_CELLS)
+        // Seed initial morphogenetic disturbances across 640x400 grid in FP16 (Half2)
+        var initialField = [Half2](repeating: Half2(1.0, 0.0), count: TOTAL_CELLS)
         let cx = Int(GRID_WIDTH / 2)
         let cy = Int(GRID_HEIGHT / 2)
         for y in (cy - 30)...(cy + 30) {
@@ -686,7 +736,7 @@ final class WallpaperRenderer: NSObject, MTKViewDelegate {
                 let dx = Float(x - cx)
                 let dy = Float(y - cy)
                 if dx * dx + dy * dy < 35.0 * 35.0 {
-                    initialField[y * Int(GRID_WIDTH) + x] = SIMD2<Float>(0.50, 0.25)
+                    initialField[y * Int(GRID_WIDTH) + x] = Half2(0.50, 0.25)
                 }
             }
         }
@@ -695,7 +745,7 @@ final class WallpaperRenderer: NSObject, MTKViewDelegate {
         for (sx, sy) in [(180, 120), (460, 280), (160, 290), (480, 110)] {
             for y in (sy - 15)...(sy + 15) {
                 for x in (sx - 15)...(sx + 15) {
-                    initialField[y * Int(GRID_WIDTH) + x] = SIMD2<Float>(0.50, 0.25)
+                    initialField[y * Int(GRID_WIDTH) + x] = Half2(0.50, 0.25)
                 }
             }
         }
@@ -752,12 +802,13 @@ final class WallpaperRenderer: NSObject, MTKViewDelegate {
             if coverageSampleCounter >= 150 {
                 coverageSampleCounter = 0
                 let activeField = (stepIndex % 2 == 0) ? bufA : bufB
-                let ptr = activeField.contents().bindMemory(to: SIMD2<Float>.self, capacity: TOTAL_CELLS)
+                let ptr = activeField.contents().bindMemory(to: Half2.self, capacity: TOTAL_CELLS)
                 var active = 0
                 let step = 64
                 var idx = 0
+                let threshHalf: UInt16 = 0x2D1F // 0.08 in half-precision IEEE 754
                 while idx < TOTAL_CELLS {
-                    if ptr[idx].y > 0.08 {
+                    if ptr[idx].v > threshHalf {
                         active += 1
                     }
                     idx += step
@@ -1484,6 +1535,9 @@ final class LiveWallpaperEngine {
     let renderer: WallpaperRenderer
     var statusItemManager: StatusItemManager?
     private(set) var isUserPaused: Bool = false
+    private(set) var isDesktopObscured: Bool = false
+    private(set) var isUserIdle: Bool = false
+    private var checkTimer: Timer?
 
     var targetFPS: Int = 30 {
         didSet {
@@ -1525,6 +1579,56 @@ final class LiveWallpaperEngine {
             pauseAll()
         } else {
             resumeAll()
+        }
+    }
+
+    /// Evaluates if the desktop is obscured by a full-screen/maximized app, or if the user is idle
+    func checkDesktopAndIdleState() {
+        if isUserPaused { return }
+
+        // 1. User Idle Inactivity: if user has not interacted for 3 minutes (180s), drop to 12 FPS
+        let idleSec = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
+        let shouldThrottleIdle = (idleSec >= 180.0)
+        if shouldThrottleIdle != isUserIdle {
+            isUserIdle = shouldThrottleIdle
+            let activeFPS = shouldThrottleIdle ? 12 : targetFPS
+            windows.forEach { $0.mtkView.preferredFramesPerSecond = activeFPS }
+            renderer.targetFPS = activeFPS
+        }
+
+        // 2. Desktop Obscuration: auto-pause if any on-screen window covers >= 94% of the screen
+        var covered = false
+        if let screen = NSScreen.main {
+            let sFrame = screen.frame
+            let totalArea = sFrame.width * sFrame.height
+            if let winList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] {
+                for win in winList {
+                    guard let layer = win[kCGWindowLayer as String] as? Int, layer == 0 else { continue }
+                    guard let boundsDict = win[kCGWindowBounds as String] as? [String: Any],
+                          let w = boundsDict["Width"] as? CGFloat,
+                          let h = boundsDict["Height"] as? CGFloat,
+                          let x = boundsDict["X"] as? CGFloat,
+                          let y = boundsDict["Y"] as? CGFloat else { continue }
+                    let winRect = CGRect(x: x, y: y, width: w, height: h)
+                    let intersection = sFrame.intersection(winRect)
+                    if !intersection.isNull {
+                        let intersectArea = intersection.width * intersection.height
+                        if intersectArea >= totalArea * 0.94 {
+                            covered = true
+                            break
+                        }
+                    }
+                }
+            }
+        }
+
+        if covered != isDesktopObscured {
+            isDesktopObscured = covered
+            if isDesktopObscured {
+                windows.forEach { $0.pause() }
+            } else {
+                windows.forEach { $0.resume() }
+            }
         }
     }
 
@@ -1606,12 +1710,18 @@ final class LiveWallpaperEngine {
             self?.syncDisplays()
         }
 
-        // 5. Active Space Change (Maintain window ordering across virtual desktops)
+        // 5. Active Space Change (Maintain window ordering across virtual desktops & re-check occlusion)
         ws.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             self?.windows.forEach { $0.window.orderFrontRegardless() }
+            self?.checkDesktopAndIdleState()
         }
 
-        // 6. Low Power Mode Throttling (macOS 12+ Battery Settings)
+        // 6. Active App Switch (Immediately check if the new frontmost app covers the screen)
+        ws.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.checkDesktopAndIdleState()
+        }
+
+        // 7. Low Power Mode Throttling (macOS 12+ Battery Settings)
         NotificationCenter.default.addObserver(
             forName: NSNotification.Name.NSProcessInfoPowerStateDidChange,
             object: nil,
@@ -1620,6 +1730,11 @@ final class LiveWallpaperEngine {
             if ProcessInfo.processInfo.isLowPowerModeEnabled {
                 self?.setTargetFPS(30)
             }
+        }
+
+        // 8. Background timer: checks desktop obscuration and user idle inactivity every 1.5s
+        self.checkTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+            self?.checkDesktopAndIdleState()
         }
     }
 
@@ -1664,6 +1779,8 @@ final class LiveWallpaperEngine {
     }
 
     func cleanup() {
+        checkTimer?.invalidate()
+        checkTimer = nil
         windows.forEach { $0.destroy() }
         windows.removeAll()
         statusItemManager = nil
