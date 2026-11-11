@@ -2,6 +2,8 @@
 .DS_Store
 .AppleDouble
 .LSOverride
+NeonWallpaper.app/
+*.dmg
 
 # Rust / Cargo
 target/

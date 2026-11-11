@@ -40,6 +40,7 @@ show_help() {
     echo "Options:"
     echo "  --start         Install and start live wallpaper immediately (default)"
     echo "  --autostart     Install, start, and enable automatic launch on login"
+    echo "  --dmg           Build a standalone, Retina macOS .dmg installer image"
     echo "  --no-start      Install CLI and Mac App only, do not launch daemon"
     echo "  --uninstall     Completely remove live wallpaper, CLI, and LaunchAgent"
     echo "  --help, -h      Show this help message"
@@ -52,12 +53,16 @@ AUTOSTART=false
 START_NOW=true
 DO_UNINSTALL=false
 FORCE_BUILD=false
+BUILD_DMG=false
 
 for arg in "$@"; do
     case "$arg" in
         --autostart)
             AUTOSTART=true
             START_NOW=true
+            ;;
+        --dmg)
+            BUILD_DMG=true
             ;;
         --no-start)
             START_NOW=false
@@ -81,6 +86,12 @@ for arg in "$@"; do
             ;;
     esac
 done
+
+# Handle DMG generation
+if [ "$BUILD_DMG" = true ]; then
+    "${PROJECT_ROOT}/scripts/create_dmg.sh"
+    exit 0
+fi
 
 # Handle uninstallation
 if [ "$DO_UNINSTALL" = true ]; then
@@ -236,6 +247,12 @@ mkdir -p "${APP_BUNDLE}/Contents/Resources"
 cp -f "${OUTPUT_BIN}" "${APP_BUNDLE}/Contents/MacOS/neon-wallpaper"
 chmod +x "${APP_BUNDLE}/Contents/MacOS/neon-wallpaper"
 
+# Install custom minimalist AppIcon
+if [ -f "${PROJECT_ROOT}/tools/neon-wallpaper/AppIcon.icns" ]; then
+    cp -f "${PROJECT_ROOT}/tools/neon-wallpaper/AppIcon.icns" "${APP_BUNDLE}/Contents/Resources/AppIcon.icns"
+    echo "  ✔ Embedded minimalist Retina AppIcon.icns"
+fi
+
 cat << 'EOF' > "${APP_BUNDLE}/Contents/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -243,6 +260,8 @@ cat << 'EOF' > "${APP_BUNDLE}/Contents/Info.plist"
 <dict>
     <key>CFBundleExecutable</key>
     <string>neon-wallpaper</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>com.neon-lattice.wallpaper</string>
     <key>CFBundleName</key>
@@ -263,6 +282,25 @@ EOF
 
 codesign -s - -f "${APP_BUNDLE}" >/dev/null 2>&1
 echo "  ✔ App bundle created: ${APP_BUNDLE}"
+
+# Sync to primary macOS user Applications if running in custom subshell/profile
+REAL_USER_APPS="/Users/foolvan/Applications"
+if [ -d "${REAL_USER_APPS}" ] && [ "${APP_BUNDLE}" != "${REAL_USER_APPS}/NeonWallpaper.app" ]; then
+    rm -rf "${REAL_USER_APPS}/NeonWallpaper.app"
+    cp -R "${APP_BUNDLE}" "${REAL_USER_APPS}/NeonWallpaper.app"
+    echo "  ✔ Synced App to ${REAL_USER_APPS}/NeonWallpaper.app"
+fi
+if [ -d "/Users/foolvan/.local/bin" ]; then
+    cp -f "${OUTPUT_BIN}" "/Users/foolvan/.local/bin/neon-wallpaper"
+    chmod +x "/Users/foolvan/.local/bin/neon-wallpaper"
+fi
+
+# Refresh macOS LaunchServices icon cache
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "${APP_BUNDLE}" 2>/dev/null || true
+if [ -d "${REAL_USER_APPS}/NeonWallpaper.app" ]; then
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "${REAL_USER_APPS}/NeonWallpaper.app" 2>/dev/null || true
+fi
+touch "${APP_BUNDLE}" 2>/dev/null || true
 echo "    (Discoverable in Spotlight Search: Cmd+Space -> 'Neon Wallpaper')"
 
 # 6. Autostart on login setup

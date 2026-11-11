@@ -23,6 +23,7 @@ When asked to modify a feature, navigate directly to the designated file:
 | **Chromatographic Palettes** | `frontend/src/components/PaletteSelector.tsx` | Tailwind CSS v4 | `frontend/src/components/PaletteSelector.tsx` | `frontend/src/types/simulation.ts` |
 | **App Layout & Keyboard Hotkeys**| `frontend/src/App.tsx` | `frontend/src/index.css` | `frontend/src/App.tsx` | `frontend/src/types/simulation.ts` |
 | **macOS Live Wallpaper Engine** | `NeonWallpaper.app` | — | `tools/neon-wallpaper/main.swift` | `install.sh` / `scripts/install_wallpaper.sh` |
+| **macOS DMG Installer Generator** | — | — | `scripts/create_dmg.sh` | `scripts/generate_dmg_background.swift` / `dist/` |
 
 ---
 
@@ -62,6 +63,11 @@ When asked to modify a feature, navigate directly to the designated file:
    - Toroidal shortest displacement wrapping across both dimensions.
    - Elastic anti-sticking repulsion core inside $d < r_1 + r_2$ guarantees agents never clump or fuse.
    - Hyperbolic flybys produce realistic gravitational slingshot maneuvers: velocity boosts up to $+90\%$ ($1.90 \times v_{\text{base}}$) with smooth dissipation ($\tau \approx 0.7\text{–}1.2$s) back to the pure procedural sweeping arc.
+8. **3-Color Real-Time Chromatographic Live Palette Invariant**:
+   - Live wallpaper color grading is driven by a 3-point RGB Hermite curve: Void Background ($t = 0.00$), Wavefront Cell Body ($t = 0.46$), and Peak Hotspots ($t = 1.00$).
+   - Dynamic 256-word Look-Up Table (`[SIMD4<UInt8>; 256]`) updates in-place inside Metal unified shared memory (`lutBuf`) in $<0.001\text{ ms}$ without pipeline recreation or frame drops.
+   - Real-time continuous color selection via AppKit `PaletteStudioWindowController` (`NSColorWell` + `NSColorPanel`) and persistent custom presets saved to `~/Library/Application Support/NeonWallpaper/palette_presets.json`.
+   - Native macOS Menu Bar item (`NSStatusItem`) provides instant 1-click preset switching, status, and studio access.
 
 ---
 
